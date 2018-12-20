@@ -17,7 +17,7 @@
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
  * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE 
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
  * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
  * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
  * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
@@ -122,6 +122,7 @@ class ExampleEventCb : public RdKafka::EventCb {
   }
 };
 
+
 void msg_consume(RdKafka::Message* message, void* opaque, char* buf) {
   const RdKafka::Headers *headers;
 
@@ -145,7 +146,7 @@ void msg_consume(RdKafka::Message* message, void* opaque, char* buf) {
           {
               //std::cout << "Timestamp present" << std::endl;
               //std::cout << "Timestamp: " << *(uint64_t*)hdr.value() << std::endl;
-              //memcpy((void*)buf + sizeof(uint64_t)/*sizeofseqno*/, hdr.value(), sizeof(uint64_t));
+              //memcpy((void*)buf + sizeof(uint64_t)/*sizeofmSeqno*/, hdr.value(), sizeof(uint64_t));
           }
           if (hdr.value() != NULL)
             printf(" Header: %s = \"%.*s\"\n",
@@ -155,7 +156,7 @@ void msg_consume(RdKafka::Message* message, void* opaque, char* buf) {
             printf(" Header:  %s = NULL\n", hdr.key().c_str());
         }
       }
-      //memcpy((void*)buf, message->payload(), message->len());
+      memcpy((void*)buf, message->payload(), message->len());
       printf("%.*s\n",
         static_cast<int>(message->len()),
         static_cast<const char *>(message->payload()));
@@ -194,16 +195,15 @@ void *runConsumerProducer(void *argument);
 class ConsumerProducer
 {
     public:
-    ConsumerProducer(const std::string &send, const std::string &receive, bool isProducer) : brokers_("localhost:9092")
-        , msg_len(128)
-        , timeStamp(0)
-        , topicSendStr_(send)
-        , topicReceiveStr_(receive)
-        , running_(false)
-        , isProducer_(isProducer)
-        , partition_(RdKafka::Topic::PARTITION_UA)
-        , startOffset_(RdKafka::Topic::OFFSET_BEGINNING)
-        , tconf_(RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC))
+    ConsumerProducer(const std::string &send, const std::string &receive, bool isProducer) : mSeqno(0)
+                                                                                       , mBrokers("localhost:9092")
+        , mTopicSendStr(send)
+        , mTopicReceiveStr(receive)
+        , mRunning(false)
+        , mIsProducer(isProducer)
+        , mPartition(RdKafka::Topic::PARTITION_UA)
+        , mStartOffset(RdKafka::Topic::OFFSET_BEGINNING)
+        , mTConf(RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC))
     {
     }
     void initialise()
@@ -214,72 +214,81 @@ class ConsumerProducer
         */
         RdKafka::Conf *conf = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
         //set conf fields
-        conf->set("metadata.broker.list", brokers_, errstr);
-        conf->set("event_cb", &exEventCb_, errstr);
-        conf->set("dr_cb", &exDrCb_, errstr);
-        conf->set("default_topic_conf", tconf_, errstr);
+        conf->set("metadata.broker.list", mBrokers, errstr);
+        conf->set("event_cb", &mExEventCb, errstr);
+        conf->set("dr_cb", &mExDrCb, errstr);
+        conf->set("default_topic_conf", mTConf, errstr);
 
         //create producer
-        producer_ = RdKafka::Producer::create(conf, errstr);
-        if (!producer_) {
+        mProducer = RdKafka::Producer::create(conf, errstr);
+        if (!mProducer) {
           std::cerr << "Failed to create producer: " << errstr << std::endl;
           exit(1);
         }
-        std::cout << "% Created producer " << producer_->name() << std::endl;
+        std::cout << "% Created producer " << mProducer->name() << std::endl;
 
         //createConsumer
         conf->set("enable.partition.eof", "true", errstr);
-        consumer_ = RdKafka::Consumer::create(conf, errstr);
-        if (!consumer_) {
+        mConsumer = RdKafka::Consumer::create(conf, errstr);
+        if (!mConsumer) {
           std::cerr << "Failed to create consumer: " << errstr << std::endl;
           exit(1);
         }
-        std::cout << "% Created consumer " << consumer_->name() << std::endl;
+        std::cout << "% Created consumer " << mConsumer->name() << std::endl;
 
         //Publish in main thread
-        if(isProducer_)
-            pthread_create (&thread_, NULL, runConsumerProducer, (void*) this);
+        if(mIsProducer)
+            pthread_create (&mThread_, NULL, runConsumerProducer, (void*) this);
 
 
     }
     void stop()
     {
-        running_ = false;
+        mRunning = false;
         //Only for producer
-        if(isProducer_)
-            pthread_join(thread_, NULL);
+        if(mIsProducer)
+            pthread_join(mThread_, NULL);
     }
-    void publish()
+    void publishTest()
     {
-        std::cout << "Publishing..." << std::endl;
+        char buf[1024];
+        int msg_len = sizeof(buf);
+        char* p = buf;
+
+        std::cout << "Current SeqNo: " << mSeqno << std::endl;
+        memcpy (p, &mSeqno, sizeof (mSeqno));
+        p += sizeof (mSeqno);
+
+        //timestamp code
+        timeval currentTime;
+        gettimeofday(&currentTime, NULL);
+
+        memcpy (p, &currentTime, sizeof(currentTime));
+        p += sizeof (currentTime);
+        //padding to rest of buffer
+        memset (p, 'A', msg_len - (p - buf));
+        publish(buf, msg_len);
+        ++mSeqno;
+    }
+    void publish(char * buf, uint64_t msg_len)
+    {
 
         RdKafka::Headers *headers = RdKafka::Headers::create();
         headers->add("my header", "header value");
         headers->add("other header", "yes");
 
-        char* p = buf;
-        memset (p, 'A', msg_len);
-        memset (p, (uint64_t)seqno, sizeof (uint64_t));
-
-        uint64_t seqno = (uint64_t)p;
-        timeval currentTime;
-        gettimeofday(&currentTime, NULL);
-        if(timeStamp <= 0)
-        {
-            memcpy (p + sizeof (uint64_t), &currentTime.tv_usec, sizeof(uint64_t));
-        }
         /*
         * Produce message
         */
         RdKafka::ErrorCode resp =
-        producer_->produce(topicSendStr_, partition_,
+        mProducer->produce(mTopicSendStr, mPartition,
                             RdKafka::Producer::RK_MSG_COPY /* Copy payload */,
                             /* Value */
-                            p, msg_len,
+                            buf, msg_len,
                             /* Key */
                             NULL, 0,
                             /* Timestamp (defaults to now) */
-                            currentTime.tv_usec,
+                            0,
                             /* Message headers, if any */
                             headers,
                             /* Per-message opaque value passed to
@@ -295,19 +304,98 @@ class ConsumerProducer
              // std::endl;
           }
 
-          producer_->poll(0);
+          mProducer->poll(0);
+    }
+
+    void msg_consume_timestamp(RdKafka::Topic *topic)
+    {
+      RdKafka::Message *message = mConsumer->consume(topic, mPartition, 1000);
+
+      switch (message->err()) {
+        case RdKafka::ERR__TIMED_OUT:
+          break;
+
+        case RdKafka::ERR_NO_ERROR:
+        {
+          int offset = 0;
+          uint64_t seqNo;
+          timeval currentTime;
+          gettimeofday(&currentTime, NULL);
+          timeval bufferTime;
+          //pull out buffer fields
+          memcpy(&seqNo, message->payload(), sizeof(seqNo));
+          offset += sizeof(seqNo);
+          memcpy(&bufferTime, (char*)message->payload() + offset, sizeof(bufferTime));
+          offset += sizeof(bufferTime);
+
+          int latency = ((currentTime.tv_sec * 1000000) + (currentTime.tv_usec)) - ((bufferTime.tv_sec * 1000000) + (bufferTime.tv_usec));
+          std::cout << "Latency : " << latency << "for SeqNo: " << seqNo<< std::endl;
+          break;
+        }
+        case RdKafka::ERR__PARTITION_EOF:
+          /* Last message */
+          if (exit_eof) {
+            run = false;
+          }
+          break;
+
+        case RdKafka::ERR__UNKNOWN_TOPIC:
+        case RdKafka::ERR__UNKNOWN_PARTITION:
+          std::cerr << "Consume failed: " << message->errstr() << std::endl;
+          run = false;
+          break;
+
+        default:
+          /* Errors */
+          std::cerr << "Consume failed: " << message->errstr() << std::endl;
+          run = false;
+      }
+      delete message;
+    }
+
+    void msg_consume_send(RdKafka::Topic *topic)
+    {
+      RdKafka::Message *message = mConsumer->consume(topic, mPartition, 1000);
+
+      switch (message->err()) {
+        case RdKafka::ERR__TIMED_OUT:
+          break;
+
+        case RdKafka::ERR_NO_ERROR:
+        {
+          publish((char*)message->payload(), message->len());
+          break;
+        }
+        case RdKafka::ERR__PARTITION_EOF:
+          /* Last message */
+          if (exit_eof) {
+            run = false;
+          }
+          break;
+
+        case RdKafka::ERR__UNKNOWN_TOPIC:
+        case RdKafka::ERR__UNKNOWN_PARTITION:
+          std::cerr << "Consume failed: " << message->errstr() << std::endl;
+          run = false;
+          break;
+
+        default:
+          /* Errors */
+          std::cerr << "Consume failed: " << message->errstr() << std::endl;
+          run = false;
+      }
+      delete message;
     }
     void consume()
     {
         //std::cout << "Consuming..." << std::endl;
-        partition_ = 0;
-        int timeStamp;
+        mPartition = 0;
         std::string errstr;
         /*
         * Create topic handle.
         */
-        RdKafka::Topic *topic = RdKafka::Topic::create(consumer_, topicReceiveStr_,
-						   tconf_, errstr);
+        RdKafka::Topic *topic = RdKafka::Topic::create(mConsumer, mTopicReceiveStr,
+						   mTConf, errstr);
         if (!topic) {
             std::cerr << "Failed to create topic: " << errstr << std::endl;
             exit(1);
@@ -316,7 +404,7 @@ class ConsumerProducer
         /*
         * Start consumer for topic+partition at start offset
         */
-        RdKafka::ErrorCode resp = consumer_->start(topic, partition_, startOffset_);
+        RdKafka::ErrorCode resp = mConsumer->start(topic, mPartition, mStartOffset);
         if (resp != RdKafka::ERR_NO_ERROR) {
             std::cerr << "Failed to start consumer: " <<
 	        RdKafka::err2str(resp) << std::endl;
@@ -329,36 +417,28 @@ class ConsumerProducer
         * Consume messages
         */
         while (run) {
-            RdKafka::Message *msg = consumer_->consume(topic, partition_, 1000);
-            char* p = buf;
-            msg_consume(msg, NULL, p);
-            uint64_t ts = *(uint64_t*)(p + sizeof(uint64_t));
-            timeval currentTime;
-            gettimeofday(&currentTime, NULL);
-            std::cout << "Latency: " << currentTime.tv_usec - ts << "microseconds"  << std::endl;
-            delete msg;
-            consumer_->poll(0);
+            msg_consume_timestamp(topic);
+            mConsumer->poll(0);
         }
 
         /*
         * Stop consumer
         */
-        consumer_->stop(topic, partition_);
+        mConsumer->stop(topic, mPartition);
 
-        consumer_->poll(1000);
+        mConsumer->poll(1000);
     }
     void consumeAndPublish()
     {
         //std::cout << "Consuming & Publishing..." << std::endl;
-        partition_ = 0;
-        int timeStamp;
+        mPartition = 0;
         std::string value;
         std::string errstr;
         /*
         * Create topic handle.
         */
-        RdKafka::Topic *topic = RdKafka::Topic::create(consumer_, topicReceiveStr_,
-						   tconf_, errstr);
+        RdKafka::Topic *topic = RdKafka::Topic::create(mConsumer, mTopicReceiveStr,
+						   mTConf, errstr);
         if (!topic) {
             std::cerr << "Failed to create topic: " << errstr << std::endl;
             exit(1);
@@ -367,7 +447,7 @@ class ConsumerProducer
         /*
         * Start consumer for topic+partition at start offset
         */
-        RdKafka::ErrorCode resp = consumer_->start(topic, partition_, startOffset_);
+        RdKafka::ErrorCode resp = mConsumer->start(topic, mPartition, mStartOffset);
         if (resp != RdKafka::ERR_NO_ERROR) {
             std::cerr << "Failed to start consumer: " <<
 	        RdKafka::err2str(resp) << std::endl;
@@ -380,51 +460,43 @@ class ConsumerProducer
         * Consume messages
         */
         while (run) {
-            RdKafka::Message *msg = consumer_->consume(topic, partition_, 1000);
-            char* p = buf;
-            msg_consume(msg, NULL, p);
-            delete msg;
-            consumer_->poll(0);
-            std::stringstream ss;
-            ss << timeStamp;
-            publish();
+            msg_consume_send(topic);
+            mConsumer->poll(0);
         }
 
         /*
         * Stop consumer
         */
-        consumer_->stop(topic, partition_);
+        mConsumer->stop(topic, mPartition);
 
-        consumer_->poll(1000);
+        mConsumer->poll(1000);
     }
     //buffer properties
-    char buf[1024];
-    uint64_t seqno;
-    uint64_t timeStamp;
-    int msg_len;
+    uint64_t mSeqno;
     //Kafka properties
-    RdKafka::Consumer *consumer_;
-    RdKafka::Producer *producer_;
-    ExampleDeliveryReportCb exDrCb_;
-    ExampleEventCb exEventCb_;
-    std::string brokers_;
-    std::string topicSendStr_;
-    std::string topicReceiveStr_;
-    std::string messageValueStr_;
-    bool running_;
-    bool isProducer_;
-    int32_t partition_;
-    int64_t startOffset_;
-    RdKafka::Conf *tconf_;
+    RdKafka::Consumer *mConsumer;
+    RdKafka::Producer *mProducer;
+    ExampleDeliveryReportCb mExDrCb;
+    ExampleEventCb mExEventCb;
+    std::string mBrokers;
+    std::string mTopicSendStr;
+    std::string mTopicReceiveStr;
+    std::string mMessageValueStr;
+    bool mRunning;
+    bool mIsProducer;
+    int32_t mPartition;
+    int64_t mStartOffset;
+    int64_t mMessageTokens;
+    RdKafka::Conf *mTConf;
     private:
-        pthread_t thread_;
+        pthread_t mThread_;
 };
 
 void *runConsumerProducer(void *argument)
 {
     ConsumerProducer* consumerProducer = (ConsumerProducer*) argument;
-    //consumerProducer->running_ = true;
-    //while(consumerProducer->running_)
+    //consumerProducer->mRunning = true;
+    //while(consumerProducer->mRunning)
     consumerProducer->consume();
     return 0;
 }
@@ -444,18 +516,22 @@ int main (int argc, char **argv) {
   std::string mode;
   std::string debug;
   int opt;
+  int64_t rate = 50;
 
-  while ((opt = getopt(argc, argv, "PCs:r:b:")) != -1) {
+  while ((opt = getopt(argc, argv, "PCo:i:b:r:")) != -1) {
     switch (opt) {
     case 'P':
     case 'C':
       mode = opt;
       break;
-    case 'r':
+    case 'i':
       topicReceiveStr = optarg;
       break;
-    case 's':
+    case 'o':
       topicSendStr = optarg;
+      break;
+    case 'r':
+      rate = atoi (optarg);
       break;
     case 'b':
       brokers = optarg;
@@ -466,17 +542,25 @@ int main (int argc, char **argv) {
     }
   }
 
+
   signal(SIGINT, sigterm);
   signal(SIGTERM, sigterm);
 
   if(mode == "P")
   {
-      std::string line = "HelloWorld";
       ConsumerProducer producer(topicSendStr, topicReceiveStr, true);
       producer.initialise();
-      producer.publish();
-      while(run)
-          sleep(1);
+      int64_t interval = (double)1000000 / rate;
+      std::cout << "Interval: " << interval << std::endl;
+      for(;;)
+      {
+          while(run)
+          {
+            producer.publishTest();
+            usleep(interval);
+          }
+          break;
+      }
       producer.stop();
   }
   if(mode == "C")
